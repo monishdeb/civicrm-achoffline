@@ -44,11 +44,24 @@ class CRM_ACHOffline_BAO_NsfReversal {
   /**
    * Reverse and reissue a single contribution.
    *
-   * @return array{original_id:int,new_id:?int,was_paid:bool,skipped:bool}
+   * @param int $contributionID
+   * @param float|null $feeAmount
+   *   NSF fee to add to the reissue. NULL uses the achoffline_nsf_fee_amount
+   *   setting; 0 adds no fee line.
+   * @param string|null $reason
+   *   Bank return reason (e.g. an R-code such as R01), recorded on the
+   *   cancelled original and passed to event consumers.
+   *
+   * @return array{original_id:int,new_id:?int,was_paid:bool,skipped:bool,fee_amount:?float}
    *
    * @throws \CRM_Core_Exception
    */
-  public static function reverse(int $contributionID): array {
+  public static function reverse(int $contributionID, ?float $feeAmount = NULL, ?string $reason = NULL): array {
+    if ($feeAmount !== NULL && $feeAmount < 0) {
+      throw new CRM_Core_Exception(E::ts('NSF fee amount cannot be negative.'));
+    }
+    $reason = ($reason === NULL || trim($reason) === '') ? NULL : trim($reason);
+
     $original = Contribution::get(FALSE)
       ->addSelect('*', 'contribution_status_id:name', 'ACH_Processor_Data.Bank_Account')
       ->addWhere('id', '=', $contributionID)
@@ -61,22 +74,27 @@ class CRM_ACHOffline_BAO_NsfReversal {
 
     // Safe to re-run: a contribution already reversed is left untouched.
     if (in_array($original['contribution_status_id:name'], self::TERMINAL_STATUSES, TRUE)) {
-      return ['original_id' => $contributionID, 'new_id' => NULL, 'was_paid' => FALSE, 'skipped' => TRUE];
+      return ['original_id' => $contributionID, 'new_id' => NULL, 'was_paid' => FALSE, 'skipped' => TRUE, 'fee_amount' => NULL];
     }
 
     $wasPaid = in_array($original['contribution_status_id:name'], ['Completed', 'Partially paid'], TRUE);
 
     $transaction = new CRM_Core_Transaction();
     try {
-      $reissue = self::reissue($original);
+      $fee = $feeAmount ?? self::getFeeAmount();
+      $reissue = self::reissue($original, $fee);
 
       // Cancel the original. On a Completed/Partially paid contribution core
       // records the reversing financial entries as part of this transition.
       $reversalStatus = \Civi::settings()->get('achoffline_nsf_reversal_status') ?: 'Cancelled';
+      $cancelReason = E::ts('Reversed (NSF / returned payment); reissued as contribution #%1.', [1 => $reissue['id']]);
+      if ($reason !== NULL) {
+        $cancelReason .= ' ' . E::ts('Return reason: %1.', [1 => $reason]);
+      }
       Contribution::update(FALSE)
         ->addValue('contribution_status_id:name', $reversalStatus)
         ->addValue('cancel_date', date('Y-m-d H:i:s'))
-        ->addValue('cancel_reason', E::ts('Reversed (NSF / returned payment); reissued as contribution #%1.', [1 => $reissue['id']]))
+        ->addValue('cancel_reason', $cancelReason)
         ->addWhere('id', '=', $contributionID)
         ->execute();
 
@@ -86,11 +104,11 @@ class CRM_ACHOffline_BAO_NsfReversal {
       // original's reversal (which may remove those records).
       \Civi::dispatcher()->dispatch(
         ContributionReissuedEvent::NAME,
-        new ContributionReissuedEvent($contributionID, $reissue['id'], $reissue['lineItemMap'], $reissue['feeLineItemId'])
+        new ContributionReissuedEvent($contributionID, $reissue['id'], $reissue['lineItemMap'], $reissue['feeLineItemId'], $fee, $reason)
       );
       \Civi::dispatcher()->dispatch(
         ContributionReversedEvent::NAME,
-        new ContributionReversedEvent($contributionID, $wasPaid, 'nsf')
+        new ContributionReversedEvent($contributionID, $wasPaid, 'nsf', $reason)
       );
     }
     catch (\Throwable $e) {
@@ -99,19 +117,18 @@ class CRM_ACHOffline_BAO_NsfReversal {
     }
     $transaction->commit();
 
-    return ['original_id' => $contributionID, 'new_id' => $reissue['id'], 'was_paid' => $wasPaid, 'skipped' => FALSE];
+    return ['original_id' => $contributionID, 'new_id' => $reissue['id'], 'was_paid' => $wasPaid, 'skipped' => FALSE, 'fee_amount' => $fee];
   }
 
   /**
    * Create the open replacement contribution: clone the original's core fields
-   * and line items, then append the NSF-fee line when one is configured.
+   * and line items, then append the NSF-fee line when $fee is positive.
    *
    * @return array{id:int,lineItemMap:array<int,int>,feeLineItemId:?int}
    *
    * @throws \CRM_Core_Exception
    */
-  private static function reissue(array $original): array {
-    $fee = self::getFeeAmount();
+  private static function reissue(array $original, float $fee): array {
     $originalTotal = (float) $original['total_amount'];
     $newTotal = $originalTotal + $fee;
 
