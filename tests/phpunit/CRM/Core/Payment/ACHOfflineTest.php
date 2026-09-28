@@ -1,5 +1,7 @@
 <?php
 
+use Civi\ACHOffline\Event\ContributionReissuedEvent;
+use Civi\ACHOffline\Event\ContributionReversedEvent;
 use Civi\Api4\Contact;
 use Civi\Api4\Contribution;
 use Civi\Api4\ContributionRecur;
@@ -248,6 +250,85 @@ class CRM_Core_Payment_ACHOfflineTest extends \PHPUnit\Framework\TestCase implem
     $this->processor->handlePaymentCron();
 
     $this->assertContributionCount(2, $recurID, 'cron did not stack a new installment on the open reissue');
+  }
+
+  public function testReverseNsfFeeAmountParam(): void {
+    \Civi::settings()->set('achoffline_nsf_fee_amount', '10');
+    $recurID = $this->createRecur(0);
+
+    $cases = [
+      [NULL, 35.0],
+      [0, 25.0],
+      [15, 40.0],
+    ];
+    foreach ($cases as [$feeAmount, $expectedTotal]) {
+      $originalID = $this->createContribution($recurID, 'Completed');
+      $params = ['checkPermissions' => FALSE, 'where' => [['id', '=', $originalID]]];
+      if ($feeAmount !== NULL) {
+        $params['feeAmount'] = $feeAmount;
+      }
+      $res = civicrm_api4('Contribution', 'reverseNsf', $params)->first();
+
+      $this->assertNull($res['error']);
+      $this->assertEquals($expectedTotal - 25, $res['fee_amount']);
+      $total = Contribution::get(FALSE)
+        ->addSelect('total_amount')
+        ->addWhere('id', '=', $res['new_id'])
+        ->execute()
+        ->first()['total_amount'];
+      $this->assertEquals($expectedTotal, (float) $total, 'feeAmount ' . var_export($feeAmount, TRUE));
+    }
+  }
+
+  public function testReverseNsfRejectsNegativeFee(): void {
+    $recurID = $this->createRecur(0);
+    $originalID = $this->createContribution($recurID, 'Completed');
+
+    $this->expectException(\CRM_Core_Exception::class);
+    civicrm_api4('Contribution', 'reverseNsf', [
+      'checkPermissions' => FALSE,
+      'where' => [['id', '=', $originalID]],
+      'feeAmount' => -1,
+    ]);
+  }
+
+  public function testReverseNsfPassesFeeAndReasonToEvents(): void {
+    \Civi::settings()->set('achoffline_nsf_fee_amount', '10');
+    $recurID = $this->createRecur(0);
+    $originalID = $this->createContribution($recurID, 'Completed');
+
+    $captured = [];
+    $onReissued = function ($e) use (&$captured) {
+      $captured['reissued'] = [$e->getFeeAmount(), $e->getReturnReason()];
+    };
+    $onReversed = function ($e) use (&$captured) {
+      $captured['reversed'] = $e->getReturnReason();
+    };
+    $dispatcher = \Civi::dispatcher();
+    $dispatcher->addListener(ContributionReissuedEvent::NAME, $onReissued);
+    $dispatcher->addListener(ContributionReversedEvent::NAME, $onReversed);
+    try {
+      civicrm_api4('Contribution', 'reverseNsf', [
+        'checkPermissions' => FALSE,
+        'where' => [['id', '=', $originalID]],
+        'feeAmount' => 12.5,
+        'reason' => 'R01',
+      ]);
+    }
+    finally {
+      $dispatcher->removeListener(ContributionReissuedEvent::NAME, $onReissued);
+      $dispatcher->removeListener(ContributionReversedEvent::NAME, $onReversed);
+    }
+
+    $this->assertEquals([12.5, 'R01'], $captured['reissued']);
+    $this->assertEquals('R01', $captured['reversed']);
+
+    $cancelReason = Contribution::get(FALSE)
+      ->addSelect('cancel_reason')
+      ->addWhere('id', '=', $originalID)
+      ->execute()
+      ->first()['cancel_reason'];
+    $this->assertStringContainsString('R01', $cancelReason);
   }
 
   /**
