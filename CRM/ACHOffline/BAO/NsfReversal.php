@@ -31,6 +31,28 @@ class CRM_ACHOffline_BAO_NsfReversal {
   private const TERMINAL_STATUSES = ['Cancelled', 'Chargeback', 'Refunded', 'Failed'];
 
   /**
+   * Statuses of a reissue that is still owed.
+   */
+  public const OPEN_REISSUE_STATUSES = ['Pending', 'Partially paid'];
+
+  /**
+   * IDs of open (still-owed) NSF reissues on a recur.
+   *
+   * @return int[]
+   *
+   * @throws \CRM_Core_Exception
+   */
+  public static function getOpenReissueIds(int $recurID): array {
+    return array_map('intval', Contribution::get(FALSE)
+      ->addSelect('id')
+      ->addWhere('contribution_recur_id', '=', $recurID)
+      ->addWhere('ACH_Processor_Data.NSF_Reissued_From', 'IS NOT NULL')
+      ->addWhere('contribution_status_id:name', 'IN', self::OPEN_REISSUE_STATUSES)
+      ->execute()
+      ->column('id'));
+  }
+
+  /**
    * Options for the reversed-contribution status setting. Both let core unwind
    * recorded financials on the Completed -> reversed transition.
    */

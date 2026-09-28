@@ -252,6 +252,22 @@ class CRM_Core_Payment_ACHOfflineTest extends \PHPUnit\Framework\TestCase implem
     $this->assertContributionCount(2, $recurID, 'cron did not stack a new installment on the open reissue');
   }
 
+  public function testGetOpenReissueIds(): void {
+    \Civi::settings()->set('achoffline_nsf_fee_amount', '');
+    $recurID = $this->createRecur(0);
+    $this->assertSame([], CRM_ACHOffline_BAO_NsfReversal::getOpenReissueIds($recurID));
+
+    $originalID = $this->createContribution($recurID, 'Completed');
+    $newID = (int) CRM_ACHOffline_BAO_NsfReversal::reverse($originalID)['new_id'];
+    $this->assertSame([$newID], CRM_ACHOffline_BAO_NsfReversal::getOpenReissueIds($recurID));
+
+    Contribution::update(FALSE)
+      ->addValue('contribution_status_id:name', 'Cancelled')
+      ->addWhere('id', '=', $newID)
+      ->execute();
+    $this->assertSame([], CRM_ACHOffline_BAO_NsfReversal::getOpenReissueIds($recurID));
+  }
+
   public function testReverseNsfFeeAmountParam(): void {
     \Civi::settings()->set('achoffline_nsf_fee_amount', '10');
     $recurID = $this->createRecur(0);
