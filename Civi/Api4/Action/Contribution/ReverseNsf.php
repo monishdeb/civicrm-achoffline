@@ -62,6 +62,7 @@ class ReverseNsf extends AbstractBatchAction {
           'new_id' => NULL,
           'was_paid' => NULL,
           'skipped' => FALSE,
+          'skip_reason' => NULL,
           'fee_amount' => NULL,
           'error' => $e->getMessage(),
         ];

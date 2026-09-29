@@ -268,6 +268,23 @@ class CRM_Core_Payment_ACHOfflineTest extends \PHPUnit\Framework\TestCase implem
     $this->assertSame([], CRM_ACHOffline_BAO_NsfReversal::getOpenReissueIds($recurID));
   }
 
+  public function testReverseNsfSkipsNonAchContribution(): void {
+    $recurID = $this->createRecur(0);
+    $originalID = $this->createContribution($recurID, 'Completed', FALSE);
+
+    $res = CRM_ACHOffline_BAO_NsfReversal::reverse($originalID);
+
+    $this->assertTrue($res['skipped']);
+    $this->assertNotEmpty($res['skip_reason']);
+    $this->assertNull($res['new_id']);
+    $status = Contribution::get(FALSE)
+      ->addSelect('contribution_status_id:name')
+      ->addWhere('id', '=', $originalID)
+      ->execute()
+      ->first()['contribution_status_id:name'];
+    $this->assertEquals('Completed', $status, 'non-ACH contribution is untouched');
+  }
+
   public function testReverseNsfFeeAmountParam(): void {
     \Civi::settings()->set('achoffline_nsf_fee_amount', '10');
     $recurID = $this->createRecur(0);
@@ -385,8 +402,9 @@ class CRM_Core_Payment_ACHOfflineTest extends \PHPUnit\Framework\TestCase implem
   /**
    * Create a contribution linked to the recur (the template for repeattransaction).
    */
-  private function createContribution(int $recurID, string $status): int {
+  private function createContribution(int $recurID, string $status, bool $withBankAccount = TRUE): int {
     return Contribution::create(FALSE)
+      ->addValue('ACH_Processor_Data.Bank_Account', $withBankAccount ? $this->tokenID : NULL)
       ->addValue('contact_id', $this->contactID)
       ->addValue('financial_type_id:name', 'Donation')
       ->addValue('total_amount', 25)

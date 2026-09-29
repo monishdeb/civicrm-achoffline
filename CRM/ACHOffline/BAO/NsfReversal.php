@@ -64,6 +64,22 @@ class CRM_ACHOffline_BAO_NsfReversal {
   }
 
   /**
+   * Why a contribution can't be reversed, or NULL when it can.
+   *
+   * @param array $contribution
+   *   Needs contribution_status_id:name and ACH_Processor_Data.Bank_Account.
+   */
+  public static function getIneligibleReason(array $contribution): ?string {
+    if (in_array($contribution['contribution_status_id:name'] ?? NULL, self::TERMINAL_STATUSES, TRUE)) {
+      return E::ts('Already reversed or closed.');
+    }
+    if (empty($contribution['ACH_Processor_Data.Bank_Account'])) {
+      return E::ts('Not an ACH contribution (no bank account).');
+    }
+    return NULL;
+  }
+
+  /**
    * Reverse and reissue a single contribution.
    *
    * @param int $contributionID
@@ -74,7 +90,7 @@ class CRM_ACHOffline_BAO_NsfReversal {
    *   Bank return reason (e.g. an R-code such as R01), recorded on the
    *   cancelled original and passed to event consumers.
    *
-   * @return array{original_id:int,new_id:?int,was_paid:bool,skipped:bool,fee_amount:?float}
+   * @return array{original_id:int,new_id:?int,was_paid:bool,skipped:bool,skip_reason:?string,fee_amount:?float}
    *
    * @throws \CRM_Core_Exception
    */
@@ -95,8 +111,9 @@ class CRM_ACHOffline_BAO_NsfReversal {
     }
 
     // Safe to re-run: a contribution already reversed is left untouched.
-    if (in_array($original['contribution_status_id:name'], self::TERMINAL_STATUSES, TRUE)) {
-      return ['original_id' => $contributionID, 'new_id' => NULL, 'was_paid' => FALSE, 'skipped' => TRUE, 'fee_amount' => NULL];
+    $skipReason = self::getIneligibleReason($original);
+    if ($skipReason !== NULL) {
+      return ['original_id' => $contributionID, 'new_id' => NULL, 'was_paid' => FALSE, 'skipped' => TRUE, 'skip_reason' => $skipReason, 'fee_amount' => NULL];
     }
 
     $wasPaid = in_array($original['contribution_status_id:name'], ['Completed', 'Partially paid'], TRUE);
@@ -139,7 +156,7 @@ class CRM_ACHOffline_BAO_NsfReversal {
     }
     $transaction->commit();
 
-    return ['original_id' => $contributionID, 'new_id' => $reissue['id'], 'was_paid' => $wasPaid, 'skipped' => FALSE, 'fee_amount' => $fee];
+    return ['original_id' => $contributionID, 'new_id' => $reissue['id'], 'was_paid' => $wasPaid, 'skipped' => FALSE, 'skip_reason' => NULL, 'fee_amount' => $fee];
   }
 
   /**
