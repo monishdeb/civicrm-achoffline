@@ -53,6 +53,27 @@ class CRM_ACHOffline_BAO_NsfReversal {
   }
 
   /**
+   * Common NACHA return reason codes.
+   *
+   * @link https://www.nacha.org/products/return-reason-code-guide
+   */
+  public static function getReturnReasonOptions(): array {
+    return [
+      'R01' => E::ts('R01 - Insufficient Funds'),
+      'R02' => E::ts('R02 - Account Closed'),
+      'R03' => E::ts('R03 - No Account / Unable to Locate Account'),
+      'R04' => E::ts('R04 - Invalid Account Number'),
+      'R07' => E::ts('R07 - Authorization Revoked by Customer'),
+      'R08' => E::ts('R08 - Payment Stopped'),
+      'R09' => E::ts('R09 - Uncollected Funds'),
+      'R10' => E::ts('R10 - Customer Advises Not Authorized'),
+      'R16' => E::ts('R16 - Account Frozen'),
+      'R20' => E::ts('R20 - Non-Transaction Account'),
+      'Other' => E::ts('Other'),
+    ];
+  }
+
+  /**
    * Options for the reversed-contribution status setting. Both let core unwind
    * recorded financials on the Completed -> reversed transition.
    */
